@@ -17,12 +17,6 @@
       "dest": "/api/index.py?carousel_folder=$carousel_folder&filename=$filename&route_type=serve_image"
     }
   ],
-  "functions": {
-    "api/index.py": {
-      "memory": 1024,
-      "maxDuration": 30 
-    }
-  },
   "env": {
     "FLASK_ENV": "production",
     "PYTHON_VERSION": "3.9" 
