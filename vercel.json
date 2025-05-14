@@ -4,26 +4,27 @@
     {
       "src": "api/index.py",
       "use": "@vercel/python",
-      "config": { "maxLambdaSize": "50mb" }
+      "config": { "maxLambdaSize": "50mb" } 
     }
   ],
   "routes": [
     {
-      "src": "/api/generate", 
+      "src": "/api/generate",
       "dest": "/api/index.py"
     },
     {
-      "src": "/generated_images/(.*)", 
-      "dest": "/api/index.py"         
+      "src": "/generated_images/(?<carousel_folder>[^/]+)/(?<filename>[^/]+)",
+      "dest": "/api/index.py?carousel_folder=$carousel_folder&filename=$filename&route_type=serve_image"
     }
   ],
   "functions": {
     "api/index.py": {
-      "memory": 1024,   
-      "maxDuration": 25 
+      "memory": 1024,
+      "maxDuration": 30 
     }
   },
   "env": {
-    "FLASK_ENV": "production" 
+    "FLASK_ENV": "production",
+    "PYTHON_VERSION": "3.9" 
   }
 }

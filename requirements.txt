@@ -1,5 +1,7 @@
-Flask==2.3.3 
+Flask==2.3.3
 Pillow==10.3.0
 requests==2.31.0
-# Ajoutez d'autres dépendances si vous en utilisez (ex: gunicorn si vous ne voulez pas le dev server de Flask)
-# Pour Vercel, le serveur de développement de Flask suffit souvent pour les fonctions serverless.
+gunicorn 
+# Gunicorn est recommandé pour les déploiements Python sur Vercel, 
+# même si le serveur de dev Flask peut fonctionner pour les fonctions simples.
+# Vercel l'utilisera s'il le trouve dans requirements.txt.
