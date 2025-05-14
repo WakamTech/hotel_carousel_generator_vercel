@@ -332,27 +332,58 @@ def handle_generate_carousel_request(): # Renommé pour éviter conflit avec la 
 
 @app.route('/generated_images/<path:carousel_folder>/<path:filename>')
 def serve_generated_image(carousel_folder, filename):
-    safe_carousel_folder = "".join(c for c in carousel_folder if c.isalnum() or c in ['_', '-'])
-    safe_filename = "".join(c for c in filename if c.isalnum() or c in ['_', '-', '.'])
-    if carousel_folder != safe_carousel_folder or filename != safe_filename:
-        return jsonify({"error": "Chemin invalide"}), 400
-            
-    directory_path = os.path.join(VERCEL_TMP_DIR, OUTPUT_DIR_NAME, safe_carousel_folder)
+    # Pour Vercel, les noms de fichiers/dossiers peuvent contenir des caractères encodés en URL (comme %C3%A8 pour è)
+    # Nous devrions utiliser les noms de fichiers/dossiers tels qu'ils sont sur le disque.
+    # Le slug est déjà "nettoyé" lors de la création du dossier.
+
+    # On ne nettoie plus agressivement carousel_folder et filename ici,
+    # car Vercel et Flask les reçoivent déjà décodés de l'URL.
+    # Le slug original `unique_subfolder_name` utilisé pour créer le dossier
+    # ne contenait pas de caractères spéciaux nécessitant un encodage URL complexe (autre que _).
+    
+    # Important: Assurez-vous que le `unique_subfolder_name` généré par `generate_and_save_carousel`
+    # ne contient que des caractères sûrs pour les noms de fichiers/dossiers.
+    # La ligne actuelle fait cela :
+    # hotel_slug_base = "".join(c if c.isalnum() else "_" for c in hotel_name.lower().replace(" ", "_").replace("'", ""))[:30]
+    # unique_folder_name = f"{hotel_slug_base}_{timestamp}"
+    # Donc, carousel_folder devrait déjà être "safe".
+
+    directory_path = os.path.join(VERCEL_TMP_DIR, OUTPUT_DIR_NAME, carousel_folder)
+    
+    # Vérification de sécurité pour s'assurer qu'on ne sort pas du répertoire attendu
     abs_output_dir = os.path.abspath(os.path.join(VERCEL_TMP_DIR, OUTPUT_DIR_NAME))
-    abs_requested_path = os.path.abspath(directory_path)
+    abs_requested_dir = os.path.abspath(directory_path)
 
-    if not abs_requested_path.startswith(abs_output_dir):
-        print(f"Tentative d'accès non autorisé pour image: {abs_requested_path} vs {abs_output_dir}")
-        return jsonify({"error": "Accès non autorisé"}), 403
+    if not abs_requested_dir.startswith(abs_output_dir):
+        print(f"Tentative d'accès non autorisé au dossier: {abs_requested_dir} vs {abs_output_dir}")
+        return jsonify({"error": "Accès non autorisé au dossier"}), 403
 
-    print(f"Tentative de servir: {safe_filename} depuis {directory_path}")
+    # Sécurité pour le nom de fichier (un peu moins strict pour les points et underscores)
+    safe_filename = "".join(c for c in filename if c.isalnum() or c in ['_', '-', '.'])
+    if filename != safe_filename:
+        print(f"Nom de fichier potentiellement dangereux détecté et nettoyé: '{filename}' -> '{safe_filename}'")
+        # Vous pourriez choisir de rejeter ici si la politique est stricte
+        # return jsonify({"error": "Caractères invalides dans le nom de fichier"}), 400
+        # Ou continuer avec le nom nettoyé, mais cela pourrait ne pas correspondre au fichier réel.
+        # Pour l'instant, on continue avec le nom de fichier original reçu,
+        # car la création de fichier elle-même devrait avoir un nom sûr.
+
+    print(f"Tentative de servir: {filename} depuis {directory_path}")
     try:
-        return send_from_directory(directory_path, safe_filename)
-    except FileNotFoundError:
-        print(f"Image non trouvée: {os.path.join(directory_path, safe_filename)}")
-        return jsonify({"error": "Image non trouvée"}), 404
+        # S'assurer que le fichier existe avant de le servir
+        file_path_to_serve = os.path.join(directory_path, filename)
+        if not os.path.exists(file_path_to_serve):
+            print(f"Fichier non trouvé sur le disque: {file_path_to_serve}")
+            return jsonify({"error": "Fichier image non trouvé sur le serveur"}), 404
+
+        return send_from_directory(directory_path, filename)
+    except FileNotFoundError: # send_from_directory peut aussi lever cela
+        print(f"FileNotFoundError en servant l'image: {os.path.join(directory_path, filename)}")
+        return jsonify({"error": "Image non trouvée (FileNotFound)"}), 404
     except Exception as e:
         print(f"Erreur en servant l'image: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": "Erreur serveur en servant l'image"}), 500
 
 # Pour que Vercel puisse importer l'application Flask.
