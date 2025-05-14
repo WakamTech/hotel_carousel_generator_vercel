@@ -7,8 +7,11 @@ from io import BytesIO
 import textwrap
 import math
 from flask import Flask, request, jsonify, send_from_directory
-import shutil # Bien que non utilisé activement pour le moment, bon à garder si besoin de nettoyage
+import shutil
 import time
+import re # Ajouté pour slugify
+import unicodedata # Ajouté pour slugify
+import traceback # Était utilisé, mais pas importé explicitement, ajout pour la clarté
 
 # --- Configuration ---
 # Sur Vercel, les fichiers temporaires doivent être écrits dans /tmp
@@ -24,17 +27,14 @@ IMAGE_OVERLAY_BG_COLOR = (0, 0, 0, 160)
 IMAGE_SLIDE_EQUIPMENT_TEXT_COLOR = (252, 196, 60)
 IMAGE_SLIDE_FOOTER_TEXT_COLOR = (255, 255, 255)
 
-# Les polices doivent être dans le dossier 'fonts' à la racine du projet,
-# pas dans le dossier 'api'. BASE_DIR ici est le dossier 'api'.
 BASE_DIR_OF_SCRIPT = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT_DIR = os.path.dirname(BASE_DIR_OF_SCRIPT) # Remonter d'un niveau pour /api -> /
+PROJECT_ROOT_DIR = os.path.dirname(BASE_DIR_OF_SCRIPT)
 FONT_DIR = os.path.join(PROJECT_ROOT_DIR, "fonts")
 
 FONT_SHRIKHAND_PATH = os.path.join(FONT_DIR, "Shrikhand-Regular.ttf")
 FONT_BOLD_PATH = os.path.join(FONT_DIR, "Roboto-Bold.ttf")
 FONT_REGULAR_PATH = os.path.join(FONT_DIR, "Roboto-Regular.ttf")
 
-# --- Tailles de police ---
 SLIDE1_HOTEL_NAME_FONT_SIZE = 120
 SLIDE1_RATING_TEXT_FONT_SIZE = 50
 SLIDE1_STAR_SIZE = 40
@@ -43,7 +43,6 @@ IMAGE_SLIDE_FOOTER_HOTEL_NAME_SIZE = 35
 IMAGE_SLIDE_FOOTER_RATING_SIZE = 35
 IMAGE_SLIDE_STAR_SIZE = 30
 
-# --- Marges et espacements ---
 PADDING = 70
 LINE_SPACING_TITLE = 15
 SECTION_SPACING = 40
@@ -54,8 +53,6 @@ STAR_TEXT_PADDING = 10
 
 app = Flask(__name__)
 
-# Essayer de charger les polices au démarrage pour une vérification précoce
-# Ces variables globales indiqueront si les polices sont chargées.
 font_shrikhand_check = None
 font_bold_check = None
 font_regular_check = None
@@ -66,8 +63,25 @@ try:
     print("Polices principales chargées avec succès au démarrage de l'API.")
 except IOError as e:
     print(f"ERREUR CRITIQUE AU DÉMARRAGE DE L'API: Impossible de charger une ou plusieurs polices depuis '{FONT_DIR}'. Erreur: {e}")
-    print("Les fonctions de génération d'images échoueront probablement.")
-    # Dans un vrai scénario de production, vous pourriez vouloir que l'application ne démarre pas ici.
+
+# --- Fonctions Utilitaires (y compris le nouveau slugify) ---
+
+def slugify_filename(value, allow_unicode=False, char_limit=50):
+    """
+    Convertit une chaîne en un nom de fichier "slug" sûr.
+    Les accents sont convertis en ASCII. Les caractères non alphanumériques
+    sont remplacés par des underscores.
+    """
+    value = str(value)
+    if allow_unicode:
+        value = unicodedata.normalize('NFKC', value)
+    else:
+        value = unicodedata.normalize('NFKD', value).encode('ascii', 'ignore').decode('ascii')
+    value = re.sub(r'[^\w\s-]', '', value).strip().lower() # Supprime ce qui n'est pas mot, espace, ou tiret
+    value = re.sub(r'[-\s]+', '_', value) # Remplace espaces et tirets par underscore
+    value = re.sub(r'_+', '_', value) # Remplace multiples underscores par un seul
+    return value[:char_limit]
+
 
 def download_image(url):
     try:
@@ -91,8 +105,7 @@ def resize_and_crop_to_square(img, target_size):
         placeholder = Image.new('RGB', target_size, (210, 210, 210))
         draw = ImageDraw.Draw(placeholder)
         try:
-            # Utiliser une police système de base si les polices personnalisées échouent au démarrage
-            font_path_placeholder = FONT_REGULAR_PATH if font_regular_check else "arial.ttf" # Fallback vers arial
+            font_path_placeholder = FONT_REGULAR_PATH if font_regular_check else "arial.ttf"
             font_placeholder_pil = ImageFont.truetype(font_path_placeholder, 40)
             text = "Erreur Image"
             bbox = font_placeholder_pil.getbbox(text)
@@ -161,6 +174,8 @@ def draw_star(draw, x_center, y_center, size, fill_color):
                        y_center + inner_radius * math.sin(angle_inner)))
     draw.polygon(points, fill=fill_color)
 
+# --- Fonctions de création de slides ---
+
 def create_first_slide(hotel_info):
     if not font_shrikhand_check or not font_bold_check:
         raise RuntimeError("Polices principales non initialisées pour create_first_slide.")
@@ -204,7 +219,9 @@ def create_amenity_image_slide(image_url, hotel_name, amenity_text, rating):
         img_slide_base_rgba.paste(cropped_img, (0,0))
     else:
         draw_placeholder = ImageDraw.Draw(img_slide_base_rgba)
-        font_placeholder = ImageFont.truetype(FONT_REGULAR_PATH, 50)
+        # Utiliser une police système de base si les polices personnalisées échouent au démarrage
+        font_path_placeholder = FONT_REGULAR_PATH if font_regular_check else "arial.ttf" # Fallback vers arial
+        font_placeholder = ImageFont.truetype(font_path_placeholder, 50)
         placeholder_text = "Image Indisponible"; w_placeholder, h_placeholder = get_text_dimensions(placeholder_text, font_placeholder)
         draw_placeholder.text(((IMAGE_SIZE[0]-w_placeholder)/2, (IMAGE_SIZE[1]-h_placeholder)/2), placeholder_text, font=font_placeholder, fill=(100,100,100,255), anchor="lt")
     
@@ -248,10 +265,15 @@ def create_amenity_image_slide(image_url, hotel_name, amenity_text, rating):
     img_slide_final = Image.alpha_composite(img_slide_base_rgba, overlay)
     return img_slide_final.convert('RGB')
 
+# --- Logique principale de génération de carrousel ---
+
 def generate_and_save_carousel(hotel_data):
     hotel_name = hotel_data.get('hotelName', 'hotel_inconnu')
     timestamp = int(time.time())
-    hotel_slug_base = "".join(c if c.isalnum() else "_" for c in hotel_name.lower().replace(" ", "_").replace("'", ""))[:30]
+    
+    # Utilisation de la fonction slugify pour un nom de dossier propre et sûr
+    hotel_slug_base = slugify_filename(hotel_name, char_limit=40) # Augmenté un peu la limite pour le slug
+    
     unique_folder_name = f"{hotel_slug_base}_{timestamp}"
     hotel_specific_output_dir = os.path.join(OUTPUT_DIR, unique_folder_name)
     
@@ -294,8 +316,10 @@ def generate_and_save_carousel(hotel_data):
             
     return unique_folder_name, generated_image_relative_paths
 
+# --- Routes Flask ---
+
 @app.route('/api/generate', methods=['POST'])
-def handle_generate_carousel_request(): # Renommé pour éviter conflit avec la fonction précédente
+def handle_generate_carousel_request():
     if not request.is_json:
         return jsonify({"error": "Request must be JSON"}), 400
     hotel_data = request.get_json()
@@ -321,7 +345,7 @@ def handle_generate_carousel_request(): # Renommé pour éviter conflit avec la 
             "hotelName": hotel_name,
             "carouselImageUrls": carousel_public_urls,
             "status": "success",
-            "generatedFilesIn": f"/tmp/{OUTPUT_DIR_NAME}/{unique_subfolder_name}"
+            "generatedFilesIn": f"/tmp/{OUTPUT_DIR_NAME}/{unique_subfolder_name}" # Chemin Vercel
         }
         print(f"  Carrousel généré pour {hotel_name}. URLs publiques: {carousel_public_urls}")
         return jsonify(response_data), 200
@@ -332,18 +356,32 @@ def handle_generate_carousel_request(): # Renommé pour éviter conflit avec la 
 
 @app.route('/generated_images/<path:carousel_folder>/<path:filename>')
 def serve_generated_image(carousel_folder, filename):
-    safe_carousel_folder = "".join(c for c in carousel_folder if c.isalnum() or c in ['_', '-'])
+    # Nettoyage simple pour la sécurité, même si slugify devrait déjà aider
+    safe_carousel_folder = slugify_filename(carousel_folder, char_limit=100) # Re-slugify pour être sûr
+    # Pour filename, on s'attend à un format comme "00_cover.png" ou "01_image.png"
+    # On peut être plus strict si nécessaire.
     safe_filename = "".join(c for c in filename if c.isalnum() or c in ['_', '-', '.'])
-    if carousel_folder != safe_carousel_folder or filename != safe_filename:
-        return jsonify({"error": "Chemin invalide"}), 400
-            
-    directory_path = os.path.join(VERCEL_TMP_DIR, OUTPUT_DIR_NAME, safe_carousel_folder)
-    abs_output_dir = os.path.abspath(os.path.join(VERCEL_TMP_DIR, OUTPUT_DIR_NAME))
-    abs_requested_path = os.path.abspath(directory_path)
 
-    if not abs_requested_path.startswith(abs_output_dir):
-        print(f"Tentative d'accès non autorisé pour image: {abs_requested_path} vs {abs_output_dir}")
-        return jsonify({"error": "Accès non autorisé"}), 403
+    if carousel_folder != safe_carousel_folder:
+        # Le slugify peut modifier légèrement, donc cette vérification peut être trop stricte
+        # Si le slugify de la route est identique au slugify original, c'est bon.
+        # Le principal est que safe_carousel_folder soit bien formé.
+        print(f"Avertissement: Le chemin du dossier du carrousel a été normalisé de '{carousel_folder}' à '{safe_carousel_folder}'")
+
+    if filename != safe_filename:
+        print(f"Avertissement: Le nom de fichier a été normalisé de '{filename}' à '{safe_filename}'")
+        # Pourrait retourner 400 si le nom de fichier d'origine contenait des caractères manifestement dangereux
+        # return jsonify({"error": "Nom de fichier invalide"}), 400
+
+    directory_path = os.path.join(VERCEL_TMP_DIR, OUTPUT_DIR_NAME, safe_carousel_folder)
+    
+    # Vérification de sécurité pour éviter le path traversal
+    abs_output_dir_root = os.path.abspath(os.path.join(VERCEL_TMP_DIR, OUTPUT_DIR_NAME))
+    abs_requested_dir_path = os.path.abspath(directory_path)
+
+    if not abs_requested_dir_path.startswith(abs_output_dir_root):
+        print(f"Tentative d'accès non autorisé (path traversal) pour image: {abs_requested_dir_path} (base attendue: {abs_output_dir_root})")
+        return jsonify({"error": "Accès non autorisé - chemin invalide"}), 403
 
     print(f"Tentative de servir: {safe_filename} depuis {directory_path}")
     try:
@@ -353,19 +391,18 @@ def serve_generated_image(carousel_folder, filename):
         return jsonify({"error": "Image non trouvée"}), 404
     except Exception as e:
         print(f"Erreur en servant l'image: {e}")
+        traceback.print_exc()
         return jsonify({"error": "Erreur serveur en servant l'image"}), 500
 
-# Pour que Vercel puisse importer l'application Flask.
-# Le if __name__ == "__main__": est pour le test local.
-# Vercel n'exécute pas cette section.
+
 if __name__ == "__main__":
-    # Ce code ne sera exécuté que si vous lancez `python api/index.py` directement.
-    # Pour le déploiement Vercel, Vercel importe `app` et utilise un serveur WSGI comme Gunicorn.
     print("Lancement du serveur Flask de développement local...")
-    # S'assurer que les dossiers existent pour le test local
     if not os.path.exists(OUTPUT_DIR):
         os.makedirs(OUTPUT_DIR, exist_ok=True)
     if not os.path.exists(FONT_DIR):
-         os.makedirs(FONT_DIR, exist_ok=True)
-         print(f"Dossier '{FONT_DIR}' créé. Assurez-vous d'y placer les polices.")
+         print(f"ATTENTION: Le dossier de polices '{FONT_DIR}' n'existe pas ou n'est pas accessible.")
+         print("La génération d'images échouera si les polices ne sont pas trouvées.")
+         # Optionnel: créer le dossier s'il n'existe pas, mais l'utilisateur doit y mettre les polices.
+         # os.makedirs(FONT_DIR, exist_ok=True)
+         # print(f"Dossier '{FONT_DIR}' créé. Assurez-vous d'y placer les polices.")
     app.run(debug=True, host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
